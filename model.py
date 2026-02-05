@@ -39,9 +39,15 @@ def ocr_image(image):
 @st.cache_resource
 def load_model():
     model_name = "facebook/nllb-200-distilled-600M"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-    return tokenizer, model
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        return tokenizer, model
+    except Exception as e:
+        # Return None on failure and log the exception to the app UI when called
+        st.error("Failed to load the NLLB model. See logs for details.")
+        st.exception(e)
+        return None, None
 
 # Load DialoGPT model
 @st.cache_resource
@@ -225,7 +231,9 @@ with tabs[0]:
             # Load models only when needed (lazy loading)
             with st.spinner("Loading NLLB model..."):
                 tokenizer, model = load_model()
-            
+            if tokenizer is None or model is None:
+                st.error("Model failed to load. Try upgrading your deployment (more RAM) or use a smaller translation model.")
+                
             # determine source language when user selected Auto-detect
             detected_iso = None
             if src_choice == "Auto-detect":
