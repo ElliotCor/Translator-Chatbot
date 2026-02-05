@@ -87,10 +87,12 @@ def save_history(history):
 def detect_language(text):
     text = (text or "").strip()
     if not text:
-        return None
+        return 'en'  # Default to English if no text
     try:
         from langdetect import detect
-        return detect(text)
+        lang = detect(text)
+        if lang:
+            return lang
     except Exception:
         pass
     def has_range(s, start, end):
@@ -101,7 +103,7 @@ def detect_language(text):
         return 'zh'
     if has_range(text, 0x0400, 0x04FF):
         return 'ru'
-    return 'en'
+    return 'en'  # Always return a default
 
 
 # Cross-version safe rerun helper for Streamlit
@@ -135,7 +137,7 @@ with st.sidebar.expander("View history", expanded=False):
 tabs = st.tabs(["Translator", "Chatbot (DialoGPT)"])
 
 with tabs[0]:
-    st.title("🌍 NLLB Translation Dashboard")
+    st.title("🌍Translation using the NLLB Model")
 
     # User input
     st.subheader("Input Methods")
@@ -227,7 +229,7 @@ with tabs[0]:
             # determine source language when user selected Auto-detect
             detected_iso = None
             if src_choice == "Auto-detect":
-                detected_iso = detect_language(text)
+                detected_iso = detect_language(text) or 'en'
                 st.info(f"Detected source language: {detected_iso}")
                 src_lang = lang_map.get(detected_iso, "eng_Latn")
             else:
@@ -235,103 +237,107 @@ with tabs[0]:
                 # map named choice -> NLLB code (reuse tgt_map keys)
                 src_lang = tgt_map.get(src_choice, "eng_Latn")
                 
-            # Tokenize with source language
-            inputs = tokenizer(text, return_tensors="pt")
+            # Tokenize with source language (ensure text is string)
+            text_str = str(text).strip() if text else ""
+            if not text_str:
+                st.error("No valid text to translate.")
+            else:
+                inputs = tokenizer(text_str, return_tensors="pt")
 
-            # Force target language
-            forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_lang)
+                # Force target language
+                forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_lang)
 
-            # Generate translation
-            translated_tokens = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id)
-            translation = tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+                # Generate translation
+                translated_tokens = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id)
+                translation = tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
 
-            st.success(f"**Translation:** {translation}")
+                st.success(f"**Translation:** {translation}")
 
-            # Browser TTS controls (Web Speech API)
-            try:
-                src_iso = detected_iso if detected_iso else {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}.get(src_choice, 'en')
-            except Exception:
-                src_iso = 'en'
-            speech_lang_map = {
-                'en': 'en-US',
-                'fr': 'fr-FR',
-                'ar': 'ar-SA',
-                'es': 'es-ES',
-                'zh': 'zh-CN',
-                'de': 'de-DE'
-            }
-            tgt_iso_map = {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}
-            src_speech_lang = speech_lang_map.get(src_iso, 'en-US')
-            tgt_speech_lang = speech_lang_map.get(tgt_iso_map.get(tgt_choice, 'en'), 'en-US')
-
-            payload = json.dumps({
-                "src": text,
-                "tgt": translation,
-                "srcLang": src_speech_lang,
-                "tgtLang": tgt_speech_lang,
-            })
-
-            html = f"""
-            <div style="display:flex;gap:8px;align-items:center;">
-                <button id="play-src">🔊 Play Source</button>
-                <button id="play-tgt">🔊 Play Translation</button>
-            </div>
-            <script id="tts-payload" type="application/json">{payload}</script>
-            <script>
-            (function(){{
-                function safeSpeak(txt, lang){{
-                    try{{
-                        if(!window.speechSynthesis){{ alert('Speech synthesis not supported in this browser.'); return; }}
-                        var msg = new SpeechSynthesisUtterance(txt);
-                        msg.lang = lang || 'en-US';
-                        window.speechSynthesis.cancel();
-                        window.speechSynthesis.speak(msg);
-                    }}catch(e){{ console.error('TTS error', e); alert('TTS error: '+e.message); }}
-                }}
-                var payloadEl = document.getElementById('tts-payload');
-                var data = {{}};
-                try{{ data = JSON.parse(payloadEl.textContent); }}catch(e){{ console.error('Could not parse TTS payload', e); }}
-                document.getElementById('play-src').addEventListener('click', function(){{ safeSpeak(data.src||'', data.srcLang); }});
-                document.getElementById('play-tgt').addEventListener('click', function(){{ safeSpeak(data.tgt||'', data.tgtLang); }});
-            }})();
-            </script>
-            """
-            st.components.v1.html(html, height=140)
-
-            # Record translation to history
-            try:
-                entry = {
-                    "time": datetime.now().isoformat(),
-                    "src_lang": detected_iso if detected_iso else src_choice,
-                    "tgt_lang": tgt_choice,
-                    "source": text,
-                    "translation": translation,
+                # Browser TTS controls (Web Speech API)
+                try:
+                    src_iso = detected_iso if detected_iso else {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}.get(src_choice, 'en')
+                except Exception:
+                    src_iso = 'en'
+                speech_lang_map = {
+                    'en': 'en-US',
+                    'fr': 'fr-FR',
+                    'ar': 'ar-SA',
+                    'es': 'es-ES',
+                    'zh': 'zh-CN',
+                    'de': 'de-DE'
                 }
-                history = load_history()
-                history.append(entry)
-                save_history(history)
-            except Exception as e:
-                st.error(f"Failed to record history: {e}")
-            
-            # Download option
-            st.subheader("📥 Download Translation")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                filename = st.text_input("Filename (without extension):", f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-                st.download_button(
-                    label="Download as TXT",
-                    data=translation,
-                    file_name=f"{filename}.txt",
-                    mime="text/plain"
-                )
-            
-            with col2:
-                st.download_button(
-                    label="Download as CSV",
-                    data=f"Original,Translation\n{text},{translation}",
-                    file_name=f"{filename}.csv",
-                    mime="text/csv"
+                tgt_iso_map = {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}
+                src_speech_lang = speech_lang_map.get(src_iso, 'en-US')
+                tgt_speech_lang = speech_lang_map.get(tgt_iso_map.get(tgt_choice, 'en'), 'en-US')
+
+                payload = json.dumps({
+                    "src": text_str,
+                    "tgt": translation,
+                    "srcLang": src_speech_lang,
+                    "tgtLang": tgt_speech_lang,
+                })
+
+                html = f"""
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button id="play-src">🔊 Play Source</button>
+                    <button id="play-tgt">🔊 Play Translation</button>
+                </div>
+                <script id="tts-payload" type="application/json">{payload}</script>
+                <script>
+                (function(){{
+                    function safeSpeak(txt, lang){{
+                        try{{
+                            if(!window.speechSynthesis){{ alert('Speech synthesis not supported in this browser.'); return; }}
+                            var msg = new SpeechSynthesisUtterance(txt);
+                            msg.lang = lang || 'en-US';
+                            window.speechSynthesis.cancel();
+                            window.speechSynthesis.speak(msg);
+                        }}catch(e){{ console.error('TTS error', e); alert('TTS error: '+e.message); }}
+                    }}
+                    var payloadEl = document.getElementById('tts-payload');
+                    var data = {{}};
+                    try{{ data = JSON.parse(payloadEl.textContent); }}catch(e){{ console.error('Could not parse TTS payload', e); }}
+                    document.getElementById('play-src').addEventListener('click', function(){{ safeSpeak(data.src||'', data.srcLang); }});
+                    document.getElementById('play-tgt').addEventListener('click', function(){{ safeSpeak(data.tgt||'', data.tgtLang); }});
+                }})();
+                </script>
+                """
+                st.components.v1.html(html, height=140)
+
+                # Record translation to history
+                try:
+                    entry = {
+                        "time": datetime.now().isoformat(),
+                        "src_lang": detected_iso if detected_iso else src_choice,
+                        "tgt_lang": tgt_choice,
+                        "source": text_str,
+                        "translation": translation,
+                    }
+                    history = load_history()
+                    history.append(entry)
+                    save_history(history)
+                except Exception as e:
+                    st.error(f"Failed to record history: {e}")
+                
+                # Download option
+                st.subheader("📥 Download Translation")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    filename = st.text_input("Filename (without extension):", f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                    st.download_button(
+                        label="Download as TXT",
+                        data=translation,
+                        file_name=f"{filename}.txt",
+                        mime="text/plain"
+                    )
+                
+                with col2:
+                    st.download_button(
+                        label="Download as CSV",
+                        data=f"Original,Translation\n{text_str},{translation}",
+                        file_name=f"{filename}.csv",
+                        mime="text/csv"
                 )
 
 with tabs[1]:
@@ -377,4 +383,4 @@ with tabs[1]:
         st.session_state.dialo_history_ids = None
         safe_rerun()
 
-    st.info("Note: `DialoGPT-small` is a lightweight conversational model; for better quality use an external API.")
+    st.info("Note: `DialoGPT-small` is a lightweight conversational model.")
