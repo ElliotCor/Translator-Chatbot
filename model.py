@@ -51,8 +51,6 @@ def load_dialo():
     m = AutoModelForCausalLM.from_pretrained(name)
     return tok, m
 
-tokenizer, model = load_model()
-dialo_tokenizer, dialo_model = load_dialo()
 
 # Initialize speech recognizer
 recognizer = sr.Recognizer()
@@ -219,116 +217,122 @@ with tabs[0]:
     target_lang = tgt_map[tgt_choice]
 
     if st.button("Translate"):
-        
-        # determine source language when user selected Auto-detect
-        detected_iso = None
-        if src_choice == "Auto-detect":
-            detected_iso = detect_language(text)
-            st.info(f"Detected source language: {detected_iso}")
-            src_lang = lang_map.get(detected_iso, "eng_Latn")
+        if not text or not text.strip():
+            st.error("⚠️ Please enter or upload text to translate.")
         else:
-            detected_iso = None
-            # map named choice -> NLLB code (reuse tgt_map keys)
-            src_lang = tgt_map.get(src_choice, "eng_Latn")
+            # Load models only when needed (lazy loading)
+            with st.spinner("Loading NLLB model..."):
+                tokenizer, model = load_model()
             
-        # Tokenize with source language
-        inputs = tokenizer(text, return_tensors="pt")
+            # determine source language when user selected Auto-detect
+            detected_iso = None
+            if src_choice == "Auto-detect":
+                detected_iso = detect_language(text)
+                st.info(f"Detected source language: {detected_iso}")
+                src_lang = lang_map.get(detected_iso, "eng_Latn")
+            else:
+                detected_iso = None
+                # map named choice -> NLLB code (reuse tgt_map keys)
+                src_lang = tgt_map.get(src_choice, "eng_Latn")
+                
+            # Tokenize with source language
+            inputs = tokenizer(text, return_tensors="pt")
 
-        # Force target language
-        forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_lang)
+            # Force target language
+            forced_bos_token_id = tokenizer.convert_tokens_to_ids(target_lang)
 
-        # Generate translation
-        translated_tokens = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id)
-        translation = tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
+            # Generate translation
+            translated_tokens = model.generate(**inputs, forced_bos_token_id=forced_bos_token_id)
+            translation = tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
 
-        st.success(f"**Translation:** {translation}")
+            st.success(f"**Translation:** {translation}")
 
-        # Browser TTS controls (Web Speech API)
-        try:
-            src_iso = detected_iso if detected_iso else {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}.get(src_choice, 'en')
-        except Exception:
-            src_iso = 'en'
-        speech_lang_map = {
-            'en': 'en-US',
-            'fr': 'fr-FR',
-            'ar': 'ar-SA',
-            'es': 'es-ES',
-            'zh': 'zh-CN',
-            'de': 'de-DE'
-        }
-        tgt_iso_map = {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}
-        src_speech_lang = speech_lang_map.get(src_iso, 'en-US')
-        tgt_speech_lang = speech_lang_map.get(tgt_iso_map.get(tgt_choice, 'en'), 'en-US')
-
-        payload = json.dumps({
-            "src": text,
-            "tgt": translation,
-            "srcLang": src_speech_lang,
-            "tgtLang": tgt_speech_lang,
-        })
-
-        html = f"""
-        <div style="display:flex;gap:8px;align-items:center;">
-            <button id="play-src">🔊 Play Source</button>
-            <button id="play-tgt">🔊 Play Translation</button>
-        </div>
-        <script id="tts-payload" type="application/json">{payload}</script>
-        <script>
-        (function(){{
-            function safeSpeak(txt, lang){{
-                try{{
-                    if(!window.speechSynthesis){{ alert('Speech synthesis not supported in this browser.'); return; }}
-                    var msg = new SpeechSynthesisUtterance(txt);
-                    msg.lang = lang || 'en-US';
-                    window.speechSynthesis.cancel();
-                    window.speechSynthesis.speak(msg);
-                }}catch(e){{ console.error('TTS error', e); alert('TTS error: '+e.message); }}
-            }}
-            var payloadEl = document.getElementById('tts-payload');
-            var data = {{}};
-            try{{ data = JSON.parse(payloadEl.textContent); }}catch(e){{ console.error('Could not parse TTS payload', e); }}
-            document.getElementById('play-src').addEventListener('click', function(){{ safeSpeak(data.src||'', data.srcLang); }});
-            document.getElementById('play-tgt').addEventListener('click', function(){{ safeSpeak(data.tgt||'', data.tgtLang); }});
-        }})();
-        </script>
-        """
-        st.components.v1.html(html, height=140)
-
-        # Record translation to history
-        try:
-            entry = {
-                "time": datetime.now().isoformat(),
-                "src_lang": detected_iso if detected_iso else src_choice,
-                "tgt_lang": tgt_choice,
-                "source": text,
-                "translation": translation,
+            # Browser TTS controls (Web Speech API)
+            try:
+                src_iso = detected_iso if detected_iso else {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}.get(src_choice, 'en')
+            except Exception:
+                src_iso = 'en'
+            speech_lang_map = {
+                'en': 'en-US',
+                'fr': 'fr-FR',
+                'ar': 'ar-SA',
+                'es': 'es-ES',
+                'zh': 'zh-CN',
+                'de': 'de-DE'
             }
-            history = load_history()
-            history.append(entry)
-            save_history(history)
-        except Exception as e:
-            st.error(f"Failed to record history: {e}")
-        
-        # Download option
-        st.subheader("📥 Download Translation")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            filename = st.text_input("Filename (without extension):", f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-            st.download_button(
-                label="Download as TXT",
-                data=translation,
-                file_name=f"{filename}.txt",
-                mime="text/plain"
-            )
-        
-        with col2:
-            st.download_button(
-                label="Download as CSV",
-                data=f"Original,Translation\n{text},{translation}",
-                file_name=f"{filename}.csv",
-                mime="text/csv"
-            )
+            tgt_iso_map = {'English':'en','French':'fr','Arabic':'ar','Spanish':'es','Chinese':'zh','German':'de'}
+            src_speech_lang = speech_lang_map.get(src_iso, 'en-US')
+            tgt_speech_lang = speech_lang_map.get(tgt_iso_map.get(tgt_choice, 'en'), 'en-US')
+
+            payload = json.dumps({
+                "src": text,
+                "tgt": translation,
+                "srcLang": src_speech_lang,
+                "tgtLang": tgt_speech_lang,
+            })
+
+            html = f"""
+            <div style="display:flex;gap:8px;align-items:center;">
+                <button id="play-src">🔊 Play Source</button>
+                <button id="play-tgt">🔊 Play Translation</button>
+            </div>
+            <script id="tts-payload" type="application/json">{payload}</script>
+            <script>
+            (function(){{
+                function safeSpeak(txt, lang){{
+                    try{{
+                        if(!window.speechSynthesis){{ alert('Speech synthesis not supported in this browser.'); return; }}
+                        var msg = new SpeechSynthesisUtterance(txt);
+                        msg.lang = lang || 'en-US';
+                        window.speechSynthesis.cancel();
+                        window.speechSynthesis.speak(msg);
+                    }}catch(e){{ console.error('TTS error', e); alert('TTS error: '+e.message); }}
+                }}
+                var payloadEl = document.getElementById('tts-payload');
+                var data = {{}};
+                try{{ data = JSON.parse(payloadEl.textContent); }}catch(e){{ console.error('Could not parse TTS payload', e); }}
+                document.getElementById('play-src').addEventListener('click', function(){{ safeSpeak(data.src||'', data.srcLang); }});
+                document.getElementById('play-tgt').addEventListener('click', function(){{ safeSpeak(data.tgt||'', data.tgtLang); }});
+            }})();
+            </script>
+            """
+            st.components.v1.html(html, height=140)
+
+            # Record translation to history
+            try:
+                entry = {
+                    "time": datetime.now().isoformat(),
+                    "src_lang": detected_iso if detected_iso else src_choice,
+                    "tgt_lang": tgt_choice,
+                    "source": text,
+                    "translation": translation,
+                }
+                history = load_history()
+                history.append(entry)
+                save_history(history)
+            except Exception as e:
+                st.error(f"Failed to record history: {e}")
+            
+            # Download option
+            st.subheader("📥 Download Translation")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                filename = st.text_input("Filename (without extension):", f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                st.download_button(
+                    label="Download as TXT",
+                    data=translation,
+                    file_name=f"{filename}.txt",
+                    mime="text/plain"
+                )
+            
+            with col2:
+                st.download_button(
+                    label="Download as CSV",
+                    data=f"Original,Translation\n{text},{translation}",
+                    file_name=f"{filename}.csv",
+                    mime="text/csv"
+                )
 
 with tabs[1]:
     st.header("🤖 Chat with DialoGPT-small (local)")
@@ -353,6 +357,10 @@ with tabs[1]:
         user_input = st.text_input("You:")
         submitted = st.form_submit_button("Send")
         if submitted and user_input.strip():
+            # Load DialoGPT only when needed
+            with st.spinner("Loading DialoGPT model..."):
+                dialo_tokenizer, dialo_model = load_dialo()
+            
             new_user_input_ids = dialo_tokenizer.encode(user_input + dialo_tokenizer.eos_token, return_tensors='pt')
             if st.session_state.dialo_history_ids is not None:
                 bot_input_ids = torch.cat([st.session_state.dialo_history_ids, new_user_input_ids], dim=-1)
@@ -369,4 +377,4 @@ with tabs[1]:
         st.session_state.dialo_history_ids = None
         safe_rerun()
 
-    st.info("Note: `DialoGPT-small` is a lightweight conversational model.")
+    st.info("Note: `DialoGPT-small` is a lightweight conversational model; for better quality use an external API.")
